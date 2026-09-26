@@ -1,13 +1,12 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
 import folium
-
-from streamlit_folium import st_folium
+import joblib
+import re
 
 from folium.plugins import HeatMap
+from streamlit_folium import st_folium
 
 
 # ============================================================
@@ -15,9 +14,10 @@ from folium.plugins import HeatMap
 # ============================================================
 
 st.set_page_config(
-    page_title="SIH26162 Fire Intelligence",
+    page_title="SIH26162 | Industrial Fire Intelligence",
     page_icon="🔥",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 
@@ -29,22 +29,59 @@ st.markdown("""
 <style>
 
 .main {
-    background-color: #f5f7fa;
+    background-color: #0e1117;
+}
+
+.block-container {
+    padding-top: 1.5rem;
+}
+
+h1 {
+    color: #ff4b4b;
+}
+
+h2, h3 {
+    color: #ffffff;
 }
 
 .metric-card {
-    background-color: white;
+    background: linear-gradient(135deg, #161b22, #21262d);
     padding: 20px;
     border-radius: 12px;
-    box-shadow: 0px 2px 8px rgba(0,0,0,0.08);
+    border: 1px solid #30363d;
     text-align: center;
 }
 
-.alert-box {
+.metric-title {
+    color: #8b949e;
+    font-size: 14px;
+}
+
+.metric-value {
+    color: white;
+    font-size: 30px;
+    font-weight: bold;
+}
+
+.alert-high {
+    background-color: #3d1111;
+    border-left: 5px solid #ff3333;
     padding: 15px;
-    border-radius: 10px;
-    background-color: #ffe5e5;
-    border-left: 5px solid #ff0000;
+    border-radius: 8px;
+}
+
+.alert-medium {
+    background-color: #3d2c0a;
+    border-left: 5px solid #ffa500;
+    padding: 15px;
+    border-radius: 8px;
+}
+
+.alert-low {
+    background-color: #123d1c;
+    border-left: 5px solid #00cc66;
+    padding: 15px;
+    border-radius: 8px;
 }
 
 </style>
@@ -52,40 +89,202 @@ st.markdown("""
 
 
 # ============================================================
-# LOAD DATA
+# FILE LOADING
 # ============================================================
 
 @st.cache_data
-def load_data():
+def load_prediction_data():
 
-    prediction_data = pd.read_csv(
+    df = pd.read_csv(
         "SIH26162_Prediction_Data.csv"
     )
 
-    osm_data = pd.read_csv(
-        "SIH26162_OSM_Industrial_Data.csv"
-    )
+    return df
 
-    return prediction_data, osm_data
+
+@st.cache_data
+def load_osm_data():
+
+    try:
+        df = pd.read_csv(
+            "SIH26162_OSM_Industrial_Data.csv"
+        )
+        return df
+
+    except Exception:
+        return pd.DataFrame()
 
 
 @st.cache_resource
 def load_model():
 
-    model = joblib.load(
-        "SIH26162_RandomForest_Model.pkl"
+    try:
+        return joblib.load(
+            "SIH26162_RandomForest_Model.pkl"
+        )
+
+    except Exception:
+        return None
+
+
+@st.cache_resource
+def load_feature_list():
+
+    try:
+        features = joblib.load(
+            "SIH26162_Feature_List.pkl"
+        )
+
+        return list(features)
+
+    except Exception:
+        return []
+
+
+# ============================================================
+# LOAD DATA
+# ============================================================
+
+try:
+
+    prediction_data = load_prediction_data()
+    osm_data = load_osm_data()
+    rf_model = load_model()
+    feature_columns = load_feature_list()
+
+except Exception as e:
+
+    st.error("❌ Unable to load application data.")
+
+    st.code(str(e))
+
+    st.stop()
+
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def find_column(df, possible_names):
+
+    if df is None or df.empty:
+        return None
+
+    lower_columns = {
+        str(c).lower(): c
+        for c in df.columns
+    }
+
+    for name in possible_names:
+
+        if name.lower() in lower_columns:
+            return lower_columns[name.lower()]
+
+    return None
+
+
+def get_lat_lon(df):
+
+    lat_col = find_column(
+        df,
+        [
+            "latitude",
+            "lat",
+            "Latitude",
+            "LATITUDE"
+        ]
     )
 
-    features = joblib.load(
-        "SIH26162_Feature_List.pkl"
+    lon_col = find_column(
+        df,
+        [
+            "longitude",
+            "lon",
+            "lng",
+            "Longitude",
+            "LONGITUDE"
+        ]
     )
 
-    return model, features
+    return lat_col, lon_col
 
 
-prediction_data, osm_data = load_data()
+def get_frp_column(df):
 
-rf_model, feature_columns = load_model()
+    return find_column(
+        df,
+        [
+            "frp",
+            "FRP",
+            "frp_mw",
+            "FRP_MW"
+        ]
+    )
+
+
+def get_classification_column(df):
+
+    return find_column(
+        df,
+        [
+            "classification",
+            "class",
+            "label",
+            "fire_class",
+            "predicted_class"
+        ]
+    )
+
+
+def get_risk_column(df):
+
+    return find_column(
+        df,
+        [
+            "risk_level",
+            "risk",
+            "risk_category",
+            "Risk_Level"
+        ]
+    )
+
+
+def get_score_column(df):
+
+    return find_column(
+        df,
+        [
+            "risk_score",
+            "score",
+            "Risk_Score"
+        ]
+    )
+
+
+def safe_numeric(series, default=0):
+
+    return pd.to_numeric(
+        series,
+        errors="coerce"
+    ).fillna(default)
+
+
+def normalize_intensity(series):
+
+    values = safe_numeric(series, 1)
+
+    if len(values) == 0:
+        return values
+
+    max_value = values.max()
+
+    if max_value <= 0:
+        return pd.Series(
+            np.ones(len(values)),
+            index=values.index
+        )
+
+    return values / max_value
 
 
 # ============================================================
@@ -95,12 +294,10 @@ rf_model, feature_columns = load_model()
 st.sidebar.title("🔥 SIH26162")
 
 st.sidebar.markdown(
-    """
-### AI Industrial Fire Monitoring
-
-NASA FIRMS + OSM + Machine Learning
-"""
+    "**Industrial Fire Intelligence System**"
 )
+
+st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
     "Navigation",
@@ -114,6 +311,27 @@ page = st.sidebar.radio(
     ]
 )
 
+st.sidebar.markdown("---")
+
+st.sidebar.caption(
+    "NASA FIRMS • OSM • GIS • Machine Learning"
+)
+
+
+# ============================================================
+# COMMON DATA INFORMATION
+# ============================================================
+
+lat_col, lon_col = get_lat_lon(prediction_data)
+
+frp_col = get_frp_column(prediction_data)
+
+class_col = get_classification_column(prediction_data)
+
+risk_col = get_risk_column(prediction_data)
+
+score_col = get_score_column(prediction_data)
+
 
 # ============================================================
 # DASHBOARD
@@ -121,145 +339,242 @@ page = st.sidebar.radio(
 
 if page == "🏠 Dashboard":
 
-    st.title(
-        "🔥 AI-Based Industrial Fire Intelligence"
-    )
+    st.title("🔥 Industrial Fire Intelligence System")
 
     st.markdown(
-        "### SIH26162"
+        """
+        ### AI-Based Detection and Classification of
+        Industrial Fires and Persistent Thermal Sources
+
+        **SIH26162**
+        """
     )
 
-    st.write(
-        "Detection and classification of industrial fires "
-        "and persistent thermal sources using NASA FIRMS, "
-        "OpenStreetMap and Machine Learning."
+    st.markdown("---")
+
+    total_detections = len(prediction_data)
+
+    if class_col:
+
+        classes = (
+            prediction_data[class_col]
+            .astype(str)
+            .str.lower()
+        )
+
+        fire_count = classes.str.contains(
+            "fire|industrial fire",
+            regex=True
+        ).sum()
+
+        thermal_count = total_detections - fire_count
+
+    else:
+
+        fire_count = 0
+        thermal_count = total_detections
+
+    if risk_col:
+
+        risk_values = (
+            prediction_data[risk_col]
+            .astype(str)
+            .str.lower()
+        )
+
+        high_risk = risk_values.str.contains(
+            "high|critical"
+        ).sum()
+
+    else:
+
+        high_risk = 0
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+
+        st.markdown(
+            f"""
+            <div class="metric-card">
+            <div class="metric-title">
+            THERMAL DETECTIONS
+            </div>
+            <div class="metric-value">
+            {total_detections}
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with col2:
+
+        st.markdown(
+            f"""
+            <div class="metric-card">
+            <div class="metric-title">
+            FIRE CANDIDATES
+            </div>
+            <div class="metric-value">
+            {fire_count}
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with col3:
+
+        st.markdown(
+            f"""
+            <div class="metric-card">
+            <div class="metric-title">
+            HIGH RISK
+            </div>
+            <div class="metric-value">
+            {high_risk}
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with col4:
+
+        st.markdown(
+            f"""
+            <div class="metric-card">
+            <div class="metric-title">
+            INDUSTRIAL LOCATIONS
+            </div>
+            <div class="metric-value">
+            {len(osm_data)}
+            </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.markdown("---")
+
+    st.subheader("📌 System Pipeline")
+
+    st.markdown(
+        """
+        **NASA FIRMS**
+        → Thermal Hotspots
+        → **OSM Industrial Context**
+        → Feature Engineering
+        → Persistence Analysis
+        → **Random Forest**
+        → Fire Classification
+        → Risk Scoring
+        → **Interactive GIS Map**
+        """
     )
 
-    st.divider()
+    st.markdown("---")
 
-    # --------------------------------------------------------
-    # KPI CALCULATIONS
-    # --------------------------------------------------------
-
-    total = len(prediction_data)
-
-    industrial = (
-        prediction_data["classification"]
-        .eq("Industrial Fire")
-        .sum()
-    )
-
-    persistent = (
-        prediction_data["classification"]
-        .eq("Persistent Thermal Source")
-        .sum()
-    )
-
-    high_risk = (
-        prediction_data["risk_category"]
-        .isin(["HIGH", "CRITICAL"])
-        .sum()
-    )
-
-    avg_confidence = (
-        prediction_data[
-            "prediction_confidence"
-        ].mean() * 100
-    )
-
-    # --------------------------------------------------------
-    # KPI ROW
-    # --------------------------------------------------------
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    col1.metric(
-        "Thermal Detections",
-        total
-    )
-
-    col2.metric(
-        "Industrial Fires",
-        industrial
-    )
-
-    col3.metric(
-        "Persistent Sources",
-        persistent
-    )
-
-    col4.metric(
-        "High/Critical Risk",
-        high_risk
-    )
-
-    col5.metric(
-        "AI Confidence",
-        f"{avg_confidence:.1f}%"
-    )
-
-    st.divider()
-
-    # --------------------------------------------------------
-    # RECENT/HIGHEST RISK DETECTIONS
-    # --------------------------------------------------------
-
-    st.subheader(
-        "Highest Risk Thermal Detections"
-    )
-
-    display_columns = [
-        "latitude",
-        "longitude",
-        "classification",
-        "risk_score",
-        "risk_category",
-        "frp",
-        "distance_km",
-        "persistence_score",
-        "prediction_confidence"
-    ]
+    st.subheader("📊 Dataset Preview")
 
     st.dataframe(
-        prediction_data[
-            display_columns
-        ]
-        .sort_values(
-            "risk_score",
-            ascending=False
-        )
-        .head(10),
+        prediction_data.head(20),
         use_container_width=True
     )
 
 
 # ============================================================
-# MAP
+# FIRE RISK MAP
 # ============================================================
 
 elif page == "🗺️ Fire Risk Map":
 
-    st.title(
-        "🗺️ Interactive Fire Risk Map"
+    st.title("🗺️ Industrial Fire & Thermal Risk Map")
+
+    st.markdown(
+        """
+        The map combines **NASA thermal detections**, 
+        **FRP-based heat intensity**, and **industrial locations**.
+        """
     )
 
-    st.write(
-        "NASA FIRMS thermal detections with "
-        "industrial proximity, AI classification and risk."
+    if lat_col is None or lon_col is None:
+
+        st.error(
+            "❌ Latitude and longitude columns were not found."
+        )
+
+        st.write(
+            "Available columns:"
+        )
+
+        st.write(
+            prediction_data.columns.tolist()
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # PREPARE MAP DATA
+    # --------------------------------------------------------
+
+    map_data = prediction_data.copy()
+
+    map_data[lat_col] = pd.to_numeric(
+        map_data[lat_col],
+        errors="coerce"
     )
 
-    map_center = [
-        prediction_data["latitude"].mean(),
-        prediction_data["longitude"].mean()
+    map_data[lon_col] = pd.to_numeric(
+        map_data[lon_col],
+        errors="coerce"
+    )
+
+    map_data = map_data.dropna(
+        subset=[lat_col, lon_col]
+    )
+
+    map_data = map_data[
+        (map_data[lat_col] >= -90) &
+        (map_data[lat_col] <= 90) &
+        (map_data[lon_col] >= -180) &
+        (map_data[lon_col] <= 180)
     ]
 
+    if len(map_data) == 0:
+
+        st.error(
+            "❌ No valid geographic coordinates found."
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # MAP CENTER
+    # --------------------------------------------------------
+
+    center_lat = map_data[lat_col].mean()
+    center_lon = map_data[lon_col].mean()
+
+    # --------------------------------------------------------
+    # CREATE MAP
+    # --------------------------------------------------------
+
     m = folium.Map(
-        location=map_center,
-        zoom_start=9,
+        location=[
+            center_lat,
+            center_lon
+        ],
+        zoom_start=7,
+        control_scale=True,
         tiles=None
     )
 
-    # Satellite
+    # --------------------------------------------------------
+    # SATELLITE BASEMAP
+    # --------------------------------------------------------
+
     folium.TileLayer(
         tiles=(
             "https://server.arcgisonline.com/"
@@ -267,114 +582,302 @@ elif page == "🗺️ Fire Risk Map":
             "MapServer/tile/{z}/{y}/{x}"
         ),
         attr="Esri",
-        name="Satellite",
-        overlay=False
+        name="🛰️ Satellite",
+        overlay=False,
+        control=True
     ).add_to(m)
 
-    # Street
+    # --------------------------------------------------------
+    # STREET MAP
+    # --------------------------------------------------------
+
     folium.TileLayer(
-        tiles=(
-            "https://server.arcgisonline.com/"
-            "ArcGIS/rest/services/World_Street_Map/"
-            "MapServer/tile/{z}/{y}/{x}"
-        ),
-        attr="Esri",
-        name="Street",
-        overlay=False
+        tiles="OpenStreetMap",
+        name="🗺️ Street Map",
+        overlay=False,
+        control=True
     ).add_to(m)
 
-    # --------------------------------------------------------
-    # INDUSTRIAL LOCATIONS
-    # --------------------------------------------------------
+    # ========================================================
+    # 🔥 THERMAL HEATMAP
+    # ========================================================
 
-    industrial_layer = folium.FeatureGroup(
-        name="🏭 Industrial Locations"
-    )
+    heat_data = []
 
-    for _, row in osm_data.iterrows():
+    if frp_col:
 
-        folium.CircleMarker(
-            location=[
-                row["latitude"],
-                row["longitude"]
-            ],
-            radius=4,
-            color="blue",
-            fill=True,
-            fill_color="blue",
-            fill_opacity=0.7,
-            popup="Industrial Location"
-        ).add_to(
-            industrial_layer
+        map_data[frp_col] = pd.to_numeric(
+            map_data[frp_col],
+            errors="coerce"
         )
 
-    industrial_layer.add_to(m)
+        map_data[frp_col] = map_data[
+            frp_col
+        ].fillna(1)
 
-    # --------------------------------------------------------
-    # FIRE DETECTIONS
-    # --------------------------------------------------------
+        max_frp = map_data[
+            frp_col
+        ].max()
 
-    for _, row in prediction_data.iterrows():
+        if max_frp > 0:
 
-        if row["classification"] == "Industrial Fire":
-
-            color = "red"
-
-        elif row["classification"] == "Persistent Thermal Source":
-
-            color = "orange"
+            map_data["_heat_intensity"] = (
+                map_data[frp_col] /
+                max_frp
+            )
 
         else:
 
-            color = "green"
+            map_data["_heat_intensity"] = 1.0
 
-        popup = f"""
-        <b>🔥 AI Fire Detection</b><br><br>
+    else:
 
-        Classification:
-        {row["classification"]}<br>
+        map_data["_heat_intensity"] = 1.0
 
-        Risk:
-        {row["risk_category"]}<br>
+    for _, row in map_data.iterrows():
 
-        Risk Score:
-        {row["risk_score"]:.1f}/100<br>
+        intensity = float(
+            row["_heat_intensity"]
+        )
 
-        AI Confidence:
-        {row["prediction_confidence"]*100:.1f}%<br>
+        intensity = max(
+            0.1,
+            min(1.0, intensity)
+        )
 
-        FRP:
-        {row["frp"]:.2f} MW<br>
+        heat_data.append(
+            [
+                float(row[lat_col]),
+                float(row[lon_col]),
+                intensity
+            ]
+        )
 
-        Industrial Distance:
-        {row["distance_km"]:.2f} km<br>
+    # --------------------------------------------------------
+    # ADD HEATMAP
+    # --------------------------------------------------------
 
-        Persistence:
-        {row["persistence_score"]:.1f}/100
+    if len(heat_data) > 0:
+
+        HeatMap(
+            heat_data,
+            name="🔥 Thermal Intensity Heatmap",
+            radius=28,
+            blur=22,
+            min_opacity=0.35,
+            max_zoom=10,
+            gradient={
+                0.15: "blue",
+                0.35: "cyan",
+                0.55: "lime",
+                0.70: "yellow",
+                0.85: "orange",
+                1.00: "red"
+            }
+        ).add_to(m)
+
+    # ========================================================
+    # INDUSTRIAL LOCATIONS
+    # ========================================================
+
+    industrial_group = folium.FeatureGroup(
+        name="🏭 Industrial Locations",
+        show=True
+    )
+
+    if not osm_data.empty:
+
+        osm_lat_col, osm_lon_col = get_lat_lon(
+            osm_data
+        )
+
+        if (
+            osm_lat_col is not None and
+            osm_lon_col is not None
+        ):
+
+            osm_copy = osm_data.copy()
+
+            osm_copy[osm_lat_col] = pd.to_numeric(
+                osm_copy[osm_lat_col],
+                errors="coerce"
+            )
+
+            osm_copy[osm_lon_col] = pd.to_numeric(
+                osm_copy[osm_lon_col],
+                errors="coerce"
+            )
+
+            osm_copy = osm_copy.dropna(
+                subset=[
+                    osm_lat_col,
+                    osm_lon_col
+                ]
+            )
+
+            for _, row in osm_copy.iterrows():
+
+                lat = float(
+                    row[osm_lat_col]
+                )
+
+                lon = float(
+                    row[osm_lon_col]
+                )
+
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=5,
+                    color="blue",
+                    fill=True,
+                    fill_color="blue",
+                    fill_opacity=0.85,
+                    popup=folium.Popup(
+                        "<b>🏭 Industrial Location</b>",
+                        max_width=250
+                    )
+                ).add_to(
+                    industrial_group
+                )
+
+    industrial_group.add_to(m)
+
+    # ========================================================
+    # THERMAL DETECTION MARKERS
+    # ========================================================
+
+    detection_group = folium.FeatureGroup(
+        name="🔥 Thermal Detections",
+        show=True
+    )
+
+    for _, row in map_data.iterrows():
+
+        lat = float(row[lat_col])
+        lon = float(row[lon_col])
+
+        if class_col:
+
+            classification = str(
+                row[class_col]
+            )
+
+        else:
+
+            classification = "Thermal Detection"
+
+        if risk_col:
+
+            risk = str(
+                row[risk_col]
+            )
+
+        else:
+
+            risk = "Unknown"
+
+        if frp_col:
+
+            frp_value = row[frp_col]
+
+        else:
+
+            frp_value = "N/A"
+
+        # ----------------------------------------------------
+        # Marker color
+        # ----------------------------------------------------
+
+        text = (
+            classification +
+            " " +
+            risk
+        ).lower()
+
+        if (
+            "high" in text or
+            "critical" in text or
+            "fire" in text
+        ):
+
+            marker_color = "red"
+
+        elif (
+            "medium" in text or
+            "moderate" in text
+        ):
+
+            marker_color = "orange"
+
+        else:
+
+            marker_color = "green"
+
+        popup_html = f"""
+        <div style="width:250px">
+
+        <h4>🔥 Thermal Detection</h4>
+
+        <b>Classification:</b>
+        {classification}<br><br>
+
+        <b>Risk:</b>
+        {risk}<br><br>
+
+        <b>FRP:</b>
+        {frp_value}<br><br>
+
+        <b>Latitude:</b>
+        {lat:.5f}<br>
+
+        <b>Longitude:</b>
+        {lon:.5f}
+
+        </div>
         """
 
         folium.CircleMarker(
             location=[
-                row["latitude"],
-                row["longitude"]
+                lat,
+                lon
             ],
-            radius=7,
-            color=color,
+            radius=6,
+            color=marker_color,
             fill=True,
-            fill_color=color,
-            fill_opacity=0.85,
+            fill_color=marker_color,
+            fill_opacity=0.9,
             popup=folium.Popup(
-                popup,
+                popup_html,
                 max_width=300
             )
-        ).add_to(m)
+        ).add_to(
+            detection_group
+        )
 
-    folium.LayerControl().add_to(m)
+    detection_group.add_to(m)
+
+    # ========================================================
+    # LAYER CONTROL
+    # ========================================================
+
+    folium.LayerControl(
+        collapsed=False
+    ).add_to(m)
+
+    # ========================================================
+    # DISPLAY MAP
+    # ========================================================
 
     st_folium(
         m,
         width=None,
-        height=650
+        height=650,
+        returned_objects=[]
+    )
+
+    st.success(
+        f"🔥 Thermal heatmap loaded using "
+        f"{len(heat_data)} detections."
     )
 
 
@@ -384,53 +887,58 @@ elif page == "🗺️ Fire Risk Map":
 
 elif page == "🔥 Fire Detections":
 
-    st.title(
-        "🔥 Fire Detection Database"
-    )
+    st.title("🔥 Fire & Thermal Detections")
 
-    # Filters
+    data = prediction_data.copy()
 
-    classification_filter = st.multiselect(
-        "Classification",
-        prediction_data[
-            "classification"
-        ].unique(),
-        default=list(
-            prediction_data[
-                "classification"
-            ].unique()
+    if class_col:
+
+        selected_class = st.multiselect(
+            "Filter Classification",
+            sorted(
+                data[class_col]
+                .dropna()
+                .astype(str)
+                .unique()
+            )
         )
-    )
 
-    risk_filter = st.multiselect(
-        "Risk Category",
-        prediction_data[
-            "risk_category"
-        ].unique(),
-        default=list(
-            prediction_data[
-                "risk_category"
-            ].unique()
+        if selected_class:
+
+            data = data[
+                data[class_col]
+                .astype(str)
+                .isin(selected_class)
+            ]
+
+    if risk_col:
+
+        selected_risk = st.multiselect(
+            "Filter Risk Level",
+            sorted(
+                data[risk_col]
+                .dropna()
+                .astype(str)
+                .unique()
+            )
         )
-    )
 
-    filtered = prediction_data[
-        prediction_data[
-            "classification"
-        ].isin(classification_filter)
-        &
-        prediction_data[
-            "risk_category"
-        ].isin(risk_filter)
-    ]
+        if selected_risk:
+
+            data = data[
+                data[risk_col]
+                .astype(str)
+                .isin(selected_risk)
+            ]
 
     st.write(
-        f"Showing {len(filtered)} detections"
+        f"Showing **{len(data)}** detections"
     )
 
     st.dataframe(
-        filtered,
-        use_container_width=True
+        data,
+        use_container_width=True,
+        height=550
     )
 
 
@@ -440,56 +948,98 @@ elif page == "🔥 Fire Detections":
 
 elif page == "📊 Analytics":
 
-    st.title(
-        "📊 Fire Analytics"
-    )
+    st.title("📊 Thermal Analytics")
 
     col1, col2 = st.columns(2)
+
+    # --------------------------------------------------------
+    # CLASSIFICATION
+    # --------------------------------------------------------
 
     with col1:
 
         st.subheader(
-            "Classification Distribution"
+            "🔥 Classification Distribution"
         )
 
-        st.bar_chart(
-            prediction_data[
-                "classification"
-            ].value_counts()
-        )
+        if class_col:
+
+            counts = (
+                prediction_data[
+                    class_col
+                ]
+                .astype(str)
+                .value_counts()
+            )
+
+            st.bar_chart(counts)
+
+        else:
+
+            st.info(
+                "Classification column not available."
+            )
+
+    # --------------------------------------------------------
+    # RISK
+    # --------------------------------------------------------
 
     with col2:
 
         st.subheader(
-            "Risk Distribution"
+            "🚨 Risk Distribution"
         )
 
-        st.bar_chart(
-            prediction_data[
-                "risk_category"
-            ].value_counts()
+        if risk_col:
+
+            counts = (
+                prediction_data[
+                    risk_col
+                ]
+                .astype(str)
+                .value_counts()
+            )
+
+            st.bar_chart(counts)
+
+        else:
+
+            st.info(
+                "Risk column not available."
+            )
+
+    # --------------------------------------------------------
+    # FRP
+    # --------------------------------------------------------
+
+    if frp_col:
+
+        st.subheader(
+            "🔥 Fire Radiative Power"
         )
 
-    st.subheader(
-        "FRP Distribution"
-    )
+        frp_values = pd.to_numeric(
+            prediction_data[frp_col],
+            errors="coerce"
+        ).dropna()
 
-    st.line_chart(
-        prediction_data[
-            "frp"
-        ].sort_values()
-        .reset_index(drop=True)
-    )
+        if len(frp_values) > 0:
 
-    st.subheader(
-        "Risk vs Industrial Distance"
-    )
+            st.line_chart(
+                frp_values.reset_index(
+                    drop=True
+                )
+            )
 
-    st.scatter_chart(
-        prediction_data,
-        x="distance_km",
-        y="risk_score"
-    )
+            st.metric(
+                "Maximum FRP",
+                f"{frp_values.max():.2f}"
+            )
+
+            st.metric(
+                "Average FRP",
+                f"{frp_values.mean():.2f}"
+            )
 
 
 # ============================================================
@@ -498,57 +1048,69 @@ elif page == "📊 Analytics":
 
 elif page == "🚨 Alerts":
 
-    st.title(
-        "🚨 Fire Risk Alerts"
-    )
+    st.title("🚨 Fire Risk Alerts")
 
-    alerts = prediction_data[
-        prediction_data[
-            "risk_category"
-        ].isin(
-            ["HIGH", "CRITICAL"]
+    if risk_col:
+
+        alert_data = prediction_data.copy()
+
+        alert_data["_risk_text"] = (
+            alert_data[risk_col]
+            .astype(str)
+            .str.lower()
         )
-    ].sort_values(
-        "risk_score",
-        ascending=False
-    )
 
-    if len(alerts) == 0:
+        high_alerts = alert_data[
+            alert_data["_risk_text"].str.contains(
+                "high|critical"
+            )
+        ]
 
-        st.success(
-            "No HIGH or CRITICAL risk detections."
+        medium_alerts = alert_data[
+            alert_data["_risk_text"].str.contains(
+                "medium|moderate"
+            )
+        ]
+
+        st.subheader(
+            f"🔴 High / Critical Risk: {len(high_alerts)}"
         )
+
+        if len(high_alerts) > 0:
+
+            st.dataframe(
+                high_alerts.drop(
+                    columns=["_risk_text"],
+                    errors="ignore"
+                ),
+                use_container_width=True
+            )
+
+        else:
+
+            st.success(
+                "No high-risk detections found."
+            )
+
+        st.subheader(
+            f"🟠 Medium Risk: {len(medium_alerts)}"
+        )
+
+        if len(medium_alerts) > 0:
+
+            st.dataframe(
+                medium_alerts.drop(
+                    columns=["_risk_text"],
+                    errors="ignore"
+                ),
+                use_container_width=True
+            )
 
     else:
 
-        st.error(
-            f"{len(alerts)} HIGH/CRITICAL "
-            "risk detections identified."
+        st.info(
+            "Risk-level information is not available."
         )
-
-        for _, row in alerts.head(10).iterrows():
-
-            st.markdown(
-                f"""
-                ### 🔥 {row["risk_category"]}
-
-                **Classification:** {row["classification"]}
-
-                **Risk Score:** {row["risk_score"]:.1f}/100
-
-                **AI Confidence:** {row["prediction_confidence"]*100:.1f}%
-
-                **FRP:** {row["frp"]:.2f} MW
-
-                **Industrial Distance:** {row["distance_km"]:.2f} km
-
-                **Coordinates:**
-                {row["latitude"]:.5f},
-                {row["longitude"]:.5f}
-                """
-            )
-
-            st.divider()
 
 
 # ============================================================
@@ -557,63 +1119,109 @@ elif page == "🚨 Alerts":
 
 elif page == "🤖 AI Model":
 
-    st.title(
-        "🤖 AI Model Information"
-    )
+    st.title("🤖 AI Model")
 
     st.subheader(
-        "Random Forest"
+        "Random Forest Classification"
     )
 
-    st.write(
-        "The model uses thermal, spatial and persistence "
-        "features to classify thermal detections."
-    )
+    if rf_model is not None:
 
-    st.subheader(
-        "Features"
-    )
-
-    for feature in feature_columns:
+        st.success(
+            "✅ Random Forest model loaded successfully."
+        )
 
         st.write(
-            f"• {feature}"
+            f"**Number of estimators:** "
+            f"{getattr(rf_model, 'n_estimators', 'N/A')}"
         )
 
-    st.subheader(
-        "Model Parameters"
-    )
-
-    st.write(
-        f"Number of Trees: "
-        f"{rf_model.n_estimators}"
-    )
-
-    st.write(
-        f"Maximum Depth: "
-        f"{rf_model.max_depth}"
-    )
-
-    st.subheader(
-        "Feature Importance"
-    )
-
-    importance_df = pd.DataFrame({
-        "Feature": feature_columns,
-        "Importance":
-            rf_model.feature_importances_
-    }).sort_values(
-        "Importance",
-        ascending=False
-    )
-
-    st.bar_chart(
-        importance_df.set_index(
-            "Feature"
+        st.write(
+            f"**Number of features:** "
+            f"{len(feature_columns)}"
         )
-    )
 
-    st.dataframe(
-        importance_df,
-        use_container_width=True
-    )
+        if feature_columns:
+
+            st.subheader(
+                "📊 Model Features"
+            )
+
+            for feature in feature_columns:
+
+                st.write(
+                    f"• {feature}"
+                )
+
+        # ----------------------------------------------------
+        # FEATURE IMPORTANCE
+        # ----------------------------------------------------
+
+        if hasattr(
+            rf_model,
+            "feature_importances_"
+        ):
+
+            importance_values = (
+                rf_model.feature_importances_
+            )
+
+            n = min(
+                len(feature_columns),
+                len(importance_values)
+            )
+
+            importance_df = pd.DataFrame(
+                {
+                    "Feature":
+                        feature_columns[:n],
+
+                    "Importance":
+                        importance_values[:n]
+                }
+            )
+
+            importance_df = (
+                importance_df
+                .sort_values(
+                    "Importance",
+                    ascending=False
+                )
+            )
+
+            st.subheader(
+                "📈 Feature Importance"
+            )
+
+            st.bar_chart(
+                importance_df.set_index(
+                    "Feature"
+                )
+            )
+
+            st.dataframe(
+                importance_df,
+                use_container_width=True
+            )
+
+    else:
+
+        st.error(
+            "❌ Random Forest model could not be loaded."
+        )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.markdown("---")
+
+st.caption(
+    "SIH26162 | AI-Based Detection and Classification "
+    "of Industrial Fires and Persistent Thermal Sources"
+)
+
+st.caption(
+    "NASA FIRMS • OpenStreetMap • GIS • Random Forest • Streamlit"
+)
